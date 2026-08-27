@@ -1,8 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from typing import List, Literal, Optional
+from datetime import datetime, timedelta
+from uuid import uuid4
 from pydantic import BaseModel
-from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
+from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders, restock_orders, tasks
 
 app = FastAPI(title="Factory Inventory Management System")
 
@@ -45,6 +47,44 @@ def apply_filters(items: list, warehouse: Optional[str] = None, category: Option
         filtered = [item for item in filtered if item.get('status', '').lower() == status.lower()]
 
     return filtered
+
+# Urgency tiers for restock recommendations (higher = more urgent)
+TREND_URGENCY = {'increasing': 3, 'stable': 2, 'decreasing': 1}
+
+# Simulated delivery lead time by demand trend (no lead-time data exists in the source data)
+LEAD_TIME_DAYS = {'increasing': 5, 'stable': 10, 'decreasing': 14}
+
+def compute_restock_recommendations(budget: float) -> list:
+    """Rank demand forecast items by urgency (trend + demand gap) and greedily
+    mark items as selected while they still fit within the remaining budget"""
+    enriched = []
+    for forecast in demand_forecasts:
+        demand_gap = forecast['forecasted_demand'] - forecast['current_demand']
+        estimated_cost = round(forecast['unit_cost'] * forecast['recommended_quantity'], 2)
+        enriched.append({**forecast, 'demand_gap': demand_gap, 'estimated_cost': estimated_cost})
+
+    # Most urgent trend tier first, then largest demand gap, then SKU for a stable order
+    enriched.sort(key=lambda item: (-TREND_URGENCY[item['trend']], -item['demand_gap'], item['item_sku']))
+
+    remaining_budget = budget
+    result = []
+    for rank, item in enumerate(enriched, start=1):
+        fits = item['estimated_cost'] <= remaining_budget
+        if fits:
+            remaining_budget -= item['estimated_cost']
+        result.append({
+            'item_sku': item['item_sku'],
+            'item_name': item['item_name'],
+            'current_demand': item['current_demand'],
+            'forecasted_demand': item['forecasted_demand'],
+            'trend': item['trend'],
+            'unit_cost': item['unit_cost'],
+            'recommended_quantity': item['recommended_quantity'],
+            'estimated_cost': item['estimated_cost'],
+            'urgency_rank': rank,
+            'selected': fits,
+        })
+    return result
 
 # CORS middleware
 app.add_middleware(
@@ -89,6 +129,8 @@ class DemandForecast(BaseModel):
     forecasted_demand: int
     trend: str
     period: str
+    unit_cost: float
+    recommended_quantity: int
 
 class BacklogItem(BaseModel):
     id: str
@@ -119,6 +161,50 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class RestockRecommendation(BaseModel):
+    item_sku: str
+    item_name: str
+    current_demand: int
+    forecasted_demand: int
+    trend: str
+    unit_cost: float
+    recommended_quantity: int
+    estimated_cost: float
+    urgency_rank: int
+    selected: bool
+
+class CreateRestockOrderRequest(BaseModel):
+    item_sku: str
+    item_name: str
+    quantity: int
+    unit_cost: float
+    trend: Literal["increasing", "stable", "decreasing"]
+
+class RestockOrder(BaseModel):
+    id: str
+    item_sku: str
+    item_name: str
+    quantity: int
+    unit_cost: float
+    total_cost: float
+    trend: str
+    status: str
+    created_date: str
+    lead_time_days: int
+    expected_delivery_date: str
+
+class Task(BaseModel):
+    id: str
+    title: str
+    priority: str
+    dueDate: str
+    status: str
+
+class CreateTaskRequest(BaseModel):
+    title: str
+    priority: str
+    dueDate: str
 
 # API endpoints
 @app.get("/")
@@ -178,6 +264,108 @@ def get_backlog():
         item_dict["has_purchase_order"] = has_po
         result.append(item_dict)
     return result
+
+@app.get("/api/restocking/recommendations", response_model=List[RestockRecommendation])
+def get_restock_recommendations(budget: float = 0.0):
+    """Get budget-driven restock recommendations ranked by urgency (trend + demand gap)"""
+    return compute_restock_recommendations(budget)
+
+@app.get("/api/restock-orders", response_model=List[RestockOrder])
+def get_restock_orders():
+    """Get all submitted restock orders"""
+    return restock_orders
+
+@app.post("/api/restock-orders", response_model=RestockOrder)
+def create_restock_order(request: CreateRestockOrderRequest):
+    """Submit a restock order for a recommended item"""
+    if request.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be positive")
+    if request.unit_cost <= 0:
+        raise HTTPException(status_code=400, detail="Unit cost must be positive")
+
+    created_date = datetime.now().isoformat()
+    lead_time_days = LEAD_TIME_DAYS[request.trend]
+    expected_delivery_date = (datetime.now() + timedelta(days=lead_time_days)).isoformat()
+
+    new_order = {
+        # uuid4 avoids the len()+1 collision that concurrent submissions (Promise.all on the frontend) would hit
+        "id": str(uuid4()),
+        "item_sku": request.item_sku,
+        "item_name": request.item_name,
+        "quantity": request.quantity,
+        "unit_cost": request.unit_cost,
+        "total_cost": round(request.quantity * request.unit_cost, 2),
+        "trend": request.trend,
+        "status": "Processing",
+        "created_date": created_date,
+        "lead_time_days": lead_time_days,
+        "expected_delivery_date": expected_delivery_date,
+    }
+    restock_orders.append(new_order)
+    return new_order
+
+@app.get("/api/purchase-orders", response_model=List[PurchaseOrder])
+def get_purchase_orders():
+    """Get all purchase orders"""
+    return purchase_orders
+
+@app.post("/api/purchase-orders", response_model=PurchaseOrder)
+def create_purchase_order(request: CreatePurchaseOrderRequest):
+    """Create a purchase order for a backlog item"""
+    if request.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be positive")
+    if request.unit_cost <= 0:
+        raise HTTPException(status_code=400, detail="Unit cost must be positive")
+
+    new_po = {
+        "id": str(uuid4()),
+        "backlog_item_id": request.backlog_item_id,
+        "supplier_name": request.supplier_name,
+        "quantity": request.quantity,
+        "unit_cost": request.unit_cost,
+        "expected_delivery_date": request.expected_delivery_date,
+        "status": "Pending",
+        "created_date": datetime.now().isoformat(),
+        "notes": request.notes,
+    }
+    purchase_orders.append(new_po)
+    return new_po
+
+@app.get("/api/tasks", response_model=List[Task])
+def get_tasks():
+    """Get all tasks"""
+    return tasks
+
+@app.post("/api/tasks", response_model=Task)
+def create_task(request: CreateTaskRequest):
+    """Create a new task"""
+    new_task = {
+        "id": str(uuid4()),
+        "title": request.title,
+        "priority": request.priority,
+        "dueDate": request.dueDate,
+        "status": "pending",
+    }
+    tasks.append(new_task)
+    return new_task
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: str):
+    """Delete a task"""
+    task = next((t for t in tasks if t["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    tasks.remove(task)
+    return {"message": "Task deleted"}
+
+@app.patch("/api/tasks/{task_id}", response_model=Task)
+def toggle_task(task_id: str):
+    """Toggle a task's completion status"""
+    task = next((t for t in tasks if t["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task["status"] = "completed" if task["status"] == "pending" else "pending"
+    return task
 
 @app.get("/api/dashboard/summary")
 def get_dashboard_summary(
