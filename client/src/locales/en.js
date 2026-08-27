@@ -4,6 +4,7 @@ export default {
     overview: 'Overview',
     inventory: 'Inventory',
     orders: 'Orders',
+    restocking: 'Restocking',
     finance: 'Finance',
     demandForecast: 'Demand Forecast',
     companyName: 'Catalyst Components',
@@ -112,6 +113,8 @@ export default {
     onTimeDelivery: 'On-Time Delivery',
     itemsCount: '{count} items',
     quantity: 'Qty',
+    submittedOrders: 'Submitted Orders',
+    noSubmittedOrders: 'No restock orders have been submitted yet',
     table: {
       orderNumber: 'Order Number',
       orderId: 'Order ID',
@@ -125,8 +128,48 @@ export default {
       totalValue: 'Total Value',
       status: 'Status',
       expectedDelivery: 'Expected Delivery',
-      actualDelivery: 'Actual Delivery'
+      actualDelivery: 'Actual Delivery',
+      sku: 'SKU',
+      itemName: 'Item Name',
+      leadTime: 'Lead Time',
+      trend: 'Trend'
     }
+  },
+
+  // Restocking
+  restocking: {
+    title: 'Restocking',
+    description: 'Set a budget and get demand-driven restock recommendations',
+    budget: {
+      label: 'Available Budget',
+      helpText: 'Adjust the slider to see which items fit your budget'
+    },
+    stats: {
+      totalBudget: 'Total Budget',
+      estimatedSpend: 'Estimated Spend',
+      remainingBudget: 'Remaining Budget',
+      itemsSelected: 'Items Selected'
+    },
+    recommendations: {
+      title: 'Recommended Items',
+      noData: 'No recommendations available'
+    },
+    table: {
+      sku: 'SKU',
+      itemName: 'Item Name',
+      trend: 'Trend',
+      currentDemand: 'Current Demand',
+      forecastedDemand: 'Forecasted Demand',
+      recommendedQty: 'Recommended Qty',
+      unitCost: 'Unit Cost',
+      estimatedCost: 'Estimated Cost',
+      included: 'Included'
+    },
+    placeOrder: 'Place Order',
+    placingOrder: 'Placing Order...',
+    orderSuccess: 'Restock order placed successfully!',
+    orderError: 'Failed to place restock order',
+    noItemsSelected: 'No items fit within the selected budget'
   },
 
   // Finance/Spending
@@ -323,6 +366,7 @@ export default {
     search: 'Search',
     filter: 'Filter',
     export: 'Export',
-    items: 'items'
+    items: 'items',
+    days: 'Days'
   }
 }
